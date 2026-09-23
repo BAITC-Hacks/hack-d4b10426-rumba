@@ -1,0 +1,5 @@
+.codex-harness/
+__pycache__/
+*.pyc
+.env
+state/
