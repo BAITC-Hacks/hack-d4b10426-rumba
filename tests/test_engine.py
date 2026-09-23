@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 from career_quest.api import App
 from career_quest.engine import Dataset, apply_effects
@@ -78,6 +79,17 @@ class CareerQuestTests(unittest.TestCase):
         self.dataset.add_profile(self.employee(skills={"SK_API_DESIGN": 1}))
         with self.assertRaises(ValueError):
             verify_proposals(self.dataset, "JUDGE_1", [{"event_id": "FAKE", "factors": ["grade", "gap", "gain"]}], self.dataset.candidates("JUDGE_1"))
+
+    def test_ai_invalid_id_falls_back_to_verified_ranking(self):
+        self.dataset.add_profile(self.employee(skills={"SK_API_DESIGN": 1}))
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
+            "career_quest.recommend._model_proposals",
+            return_value=[{"event_id": "FAKE", "factors": ["grade", "gap", "gain"]}],
+        ):
+            result = recommendations(self.dataset, "JUDGE_1")
+        self.assertEqual(result["source"], "deterministic")
+        self.assertTrue(result["recommendations"])
+        self.assertNotEqual(result["recommendations"][0]["event_id"], "FAKE")
 
     def test_completion_gain_cap_and_recommendation_refresh(self):
         self.dataset.add_profile(self.employee(skills={"SK_SYSTEM_DESIGN": 2, "SK_API_DESIGN": 2}))

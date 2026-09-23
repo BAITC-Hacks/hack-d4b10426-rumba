@@ -50,7 +50,7 @@ API contracts are in [docs/API.md](docs/API.md). Dataset details are in [docs/DA
 
 ## Model Proposes, Runtime Verifies
 
-When `OPENAI_API_KEY` is set, the API sends up to 12 compact candidate feature objects to `gpt-4.1-mini` by default (`OPENAI_MODEL` can override). It requests strict JSON containing 1–3 event IDs and factor keys, with an 8-second network timeout. The verifier rejects unknown, duplicate, ineligible or ineffective events; unsupported skills, requirements, gain or `max_level`; and fewer than three distinct evidence factors. Explanations are built from verified fields. If the model call or verification fails, a deterministic top-three fallback responds. Live model latency and behavior require an API key and were not exercised in the local test run.
+When `OPENAI_API_KEY` is set, the API sends up to 12 compact candidate feature objects to [`gpt-4.1-mini`](https://developers.openai.com/api/docs/models/gpt-4.1-mini) by default (`OPENAI_MODEL` can override). It requests [strict JSON](https://developers.openai.com/api/docs/guides/structured-outputs) containing 1–3 event IDs and factor keys, with an 8-second network timeout. The verifier rejects unknown, duplicate, ineligible or ineffective events; unsupported skills, requirements, gain or `max_level`; and fewer than three distinct evidence factors. Explanations are built from verified fields. If the model call or verification fails, a deterministic top-three fallback responds. Live model latency and behavior require an API key and were not exercised in the local test run.
 
 ## What-If Simulation
 
@@ -82,7 +82,7 @@ Dataset-derived catalogs and indexes load once at startup; candidate filtering r
 
 ## Tests
 
-Run `python -m unittest discover -s tests -v`. Nine tests cover: critical next-grade skills versus low unrelated skills; three similar misses and explanation; ineffective `max_level`; unrelated skill ranking; arbitrary uploaded profiles/history; hallucinated event IDs; completion gain and cap; what-if immutability; and persistence across restart. Browser and HTTP smoke checks were also run locally.
+Run `python -m unittest discover -s tests -v`. Ten tests cover: critical next-grade skills versus low unrelated skills; three similar misses and explanation; ineffective `max_level`; unrelated skill ranking; arbitrary uploaded profiles/history; hallucinated event IDs and fallback; completion gain and cap; what-if immutability; and persistence across restart. Browser and HTTP smoke checks were also run locally.
 
 ## Privacy
 
