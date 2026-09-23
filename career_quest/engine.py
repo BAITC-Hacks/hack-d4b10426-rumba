@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import date
 from collections import Counter, defaultdict
 from copy import deepcopy
 from pathlib import Path
@@ -11,6 +12,7 @@ GRADES = ("Junior", "Middle", "Senior", "Lead")
 MISSED = {"dropped", "no_show"}
 DECLINED = {"declined"}
 RECURRING = {"EV_036"}  # Explicit exception in the starter README.
+STATUSES = {"completed", "in_progress", "dropped", "no_show", "declined", "overdue"}
 
 
 class Dataset:
@@ -31,19 +33,69 @@ class Dataset:
             self.history_by_employee[row["employee_id"]].append(row)
 
     def add_profile(self, employee: dict, history: list[dict] | None = None) -> None:
+        if not isinstance(employee, dict) or not isinstance(history, (list, type(None))):
+            raise ValueError("invalid profile or history")
+        required = {"employee_id", "full_name", "department", "role", "grade", "manager_id", "hire_date", "tenure_months", "work_format", "preferred_language", "career_goal", "skills", "last_review_date"}
+        if not required <= employee.keys() or not isinstance(employee["employee_id"], str) or not employee["employee_id"]:
+            raise ValueError("invalid employee profile")
         employee_id = employee["employee_id"]
         if employee_id in self.employees:
             raise ValueError("employee_id already exists")
         if (employee["role"], employee["grade"]) not in self.profiles:
             raise ValueError("unknown role or grade")
-        if any(skill not in self.skills or not 0 <= level <= 5 for skill, level in employee["skills"].items()):
+        if any(not isinstance(employee[key], str) or not employee[key] for key in ("full_name", "department", "role", "grade")):
+            raise ValueError("invalid employee profile")
+        if employee["manager_id"] is not None and employee["manager_id"] not in self.employees:
+            raise ValueError("unknown manager_id")
+        if type(employee["tenure_months"]) is not int or employee["tenure_months"] < 0 or employee["work_format"] not in {"office", "hybrid", "remote"} or employee["preferred_language"] not in {"kk", "ru", "en"}:
+            raise ValueError("invalid employee profile")
+        if employee["career_goal"] is not None and (not isinstance(employee["career_goal"], dict) or
+            (employee["career_goal"].get("target_role"), employee["career_goal"].get("target_grade")) not in self.profiles):
+            raise ValueError("invalid career_goal")
+        if not isinstance(employee["skills"], dict) or any(skill not in self.skills or type(level) is not int or not 0 <= level <= 5 for skill, level in employee["skills"].items()):
             raise ValueError("invalid employee skills")
-        rows = history or []
-        if any(row["employee_id"] != employee_id or row["event_id"] not in self.events for row in rows):
-            raise ValueError("invalid history reference")
+        try:
+            date.fromisoformat(employee["hire_date"])
+            date.fromisoformat(employee["last_review_date"])
+            rows = deepcopy(history or [])
+            seen_ids = {row["record_id"] for row in self.history}
+            completed = set()
+            for row in rows:
+                if not isinstance(row, dict) or not {"record_id", "employee_id", "event_id", "date", "status"} <= row.keys():
+                    raise ValueError("invalid history row")
+                row.setdefault("completion_pct", "100" if row["status"] == "completed" else "0")
+                row.setdefault("due_date", "")
+                row.setdefault("score", "")
+                row.setdefault("feedback_rating", "")
+                row.setdefault("assigned_by", "self")
+                if not isinstance(row["record_id"], str) or not row["record_id"] or row["record_id"] in seen_ids:
+                    raise ValueError("duplicate or invalid record_id")
+                seen_ids.add(row["record_id"])
+                if row["employee_id"] != employee_id or row["event_id"] not in self.events or row["status"] not in STATUSES:
+                    raise ValueError("invalid history reference or status")
+                date.fromisoformat(row["date"])
+                if row["due_date"]:
+                    date.fromisoformat(row["due_date"])
+                pct = int(row["completion_pct"])
+                if str(pct) != str(row["completion_pct"]):
+                    raise ValueError("invalid history completion_pct")
+                if not 0 <= pct <= 100 or (row["status"] == "completed" and pct != 100) or (row["status"] in {"in_progress", "dropped", "overdue"} and pct > 95) or (row["status"] in {"no_show", "declined"} and pct != 0):
+                    raise ValueError("invalid history completion_pct")
+                if row["assigned_by"] not in {"self", "manager", "hr"}:
+                    raise ValueError("invalid history assigned_by")
+                if row["score"] != "" and not 0 <= int(row["score"]) <= 100:
+                    raise ValueError("invalid history score")
+                if row["feedback_rating"] != "" and not 1 <= int(row["feedback_rating"]) <= 5:
+                    raise ValueError("invalid history feedback_rating")
+                if row["status"] == "completed" and row["event_id"] not in RECURRING:
+                    if row["event_id"] in completed:
+                        raise ValueError("completed event cannot repeat")
+                    completed.add(row["event_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid imported history or profile") from exc
         self.employees[employee_id] = deepcopy(employee)
-        self.history.extend(deepcopy(rows))
-        self.history_by_employee[employee_id].extend(deepcopy(rows))
+        self.history.extend(rows)
+        self.history_by_employee[employee_id].extend(rows)
 
     def current_skills(self, employee_id: str) -> dict[str, int]:
         employee = self.employees[employee_id]
@@ -162,6 +214,22 @@ class Dataset:
                                   for x in event["develops_skills"]]}
 
     def complete(self, employee_id: str, event_id: str) -> dict:
+        event = self.events[event_id]
+        rows = self.history_by_employee[employee_id]
+        active = next((row for row in rows if row["event_id"] == event_id and row["status"] == "in_progress"), None)
+        if active is not None:
+            if event_id not in RECURRING and any(row["event_id"] == event_id and row["status"] == "completed" for row in rows):
+                raise ValueError("event is already completed")
+            before = self.trajectory(employee_id)
+            after = self.trajectory(employee_id, apply_effects(before["current_skills"], event))
+            simulation = {"event_id": event_id, "before": before, "after": after,
+                          "skill_changes": [dict(skill_id=x["skill_id"], before=before["current_skills"].get(x["skill_id"], 0),
+                                                 after=after["current_skills"].get(x["skill_id"], 0)) for x in event["develops_skills"]]}
+            active["status"] = "completed"
+            active["date"] = self.as_of_date
+            active["completion_pct"] = "100"
+            return {"record": deepcopy(active), "replaces_record_id": active["record_id"],
+                    "trajectory": self.trajectory(employee_id), "simulation": simulation}
         simulation = self.simulate(employee_id, event_id)
         record = {"record_id": f"R_LOCAL_{len(self.history) + 1}", "employee_id": employee_id,
                   "event_id": event_id, "date": self.as_of_date, "due_date": "", "status": "completed",

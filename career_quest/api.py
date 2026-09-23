@@ -5,6 +5,7 @@ import json
 import os
 import threading
 from collections import Counter
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -26,13 +27,18 @@ class App:
             for item in self.state["profiles"]:
                 self.dataset.add_profile(item["employee"], item.get("history", []))
             for item in self.state["completions"]:
-                self.dataset.history.append(item)
-                self.dataset.history_by_employee[item["employee_id"]].append(item)
+                if "replaces_record_id" in item:
+                    row = next(row for row in self.dataset.history_by_employee[item["employee_id"]]
+                               if row["record_id"] == item["replaces_record_id"])
+                    row.update({key: value for key, value in item.items() if key != "replaces_record_id"})
+                else:
+                    self.dataset.history.append(item)
+                    self.dataset.history_by_employee[item["employee_id"]].append(item)
 
-    def save(self) -> None:
+    def save(self, state: dict | None = None) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         temp = self.state_file.with_suffix(".tmp")
-        temp.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.write_text(json.dumps(self.state if state is None else state, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(self.state_file)
 
     def profile(self, employee_id: str) -> dict:
@@ -71,17 +77,28 @@ class App:
     def complete(self, employee_id: str, event_id: str) -> dict:
         with self.lock:
             result = self.dataset.complete(employee_id, event_id)
-            self.state["completions"].append(result["record"])
+            stored = dict(result["record"])
+            if "replaces_record_id" in result:
+                stored["replaces_record_id"] = result["replaces_record_id"]
+            self.state["completions"].append(stored)
             self.save()
             result["recommendations"] = recommendations(self.dataset, employee_id, use_ai=False)
             return result
 
     def add_profile(self, employee: dict, history: list[dict]) -> dict:
         with self.lock:
-            self.dataset.add_profile(employee, history)
-            self.state["profiles"].append({"employee": employee, "history": history})
-            self.save()
-            return self.profile(employee["employee_id"])
+            staged_dataset = deepcopy(self.dataset)
+            staged_dataset.add_profile(employee, history)
+            staged_state = deepcopy(self.state)
+            staged_state["profiles"].append({"employee": deepcopy(employee), "history": deepcopy(history)})
+            employee_id = employee["employee_id"]
+            profile = {**staged_dataset.employees[employee_id],
+                       "current_skills": staged_dataset.current_skills(employee_id),
+                       "participation": staged_dataset.participation(employee_id)}
+            self.save(staged_state)
+            self.dataset = staged_dataset
+            self.state = staged_state
+            return profile
 
 
 def handler_for(app: App):

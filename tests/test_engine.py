@@ -1,10 +1,17 @@
 import tempfile
+import json
+import os
+import threading
+import time
 import unittest
+from http.server import ThreadingHTTPServer
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
-from career_quest.api import App
+from career_quest.api import App, handler_for
 from career_quest.engine import Dataset, apply_effects
 from career_quest.recommend import recommendations, verify_proposals
 
@@ -90,6 +97,129 @@ class CareerQuestTests(unittest.TestCase):
         self.assertEqual(result["source"], "deterministic")
         self.assertTrue(result["recommendations"])
         self.assertNotEqual(result["recommendations"][0]["event_id"], "FAKE")
+
+    def test_slow_response_body_falls_back_within_deadline(self):
+        self.dataset.add_profile(self.employee(skills={"SK_API_DESIGN": 1}))
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SlowResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def read(self, *_):
+                entered.set()
+                release.wait(2)
+                return b'{"choices":[{"message":{"content":"{\\"recommendations\\":[{\\"event_id\\":\\"EV_005\\",\\"factors\\":[\\"grade\\",\\"gap\\",\\"gain\\"]}]}"}}]}'
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), patch("career_quest.recommend.AI_DEADLINE_SECONDS", 0.2), patch("career_quest.recommend.urlopen", return_value=SlowResponse()):
+            start = time.monotonic()
+            result = recommendations(self.dataset, "JUDGE_1")
+            elapsed = time.monotonic() - start
+            self.assertTrue(entered.is_set())
+            self.assertEqual(result["source"], "deterministic")
+            self.assertLess(elapsed, 0.5)
+            second_start = time.monotonic()
+            self.assertEqual(recommendations(self.dataset, "JUDGE_1")["source"], "deterministic")
+            self.assertLess(time.monotonic() - second_start, 0.5)
+            release.set()
+
+    def test_no_api_key_keeps_deterministic_recommendations(self):
+        self.dataset.add_profile(self.employee(skills={"SK_API_DESIGN": 1}))
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}), patch("career_quest.recommend._model_proposals") as model:
+            result = recommendations(self.dataset, "JUDGE_1")
+        self.assertEqual(result["source"], "deterministic")
+        self.assertTrue(result["recommendations"])
+        model.assert_not_called()
+
+    def test_failed_import_leaves_persistence_and_hr_intact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "changes.json"
+            app = App(DATA, path)
+            good = self.employee(employee_id="EXISTING", skills={"SK_API_DESIGN": 1})
+            app.add_profile(good, [])
+            previous = path.read_bytes()
+            bad = self.employee(employee_id="BROKEN", skills={"SK_API_DESIGN": 1})
+            history = [{"record_id": "BAD_1", "employee_id": "BROKEN", "event_id": "EV_005", "date": "2026-09-20", "status": "completed", "completion_pct": "100"},
+                       {"record_id": "BAD_2", "employee_id": "BROKEN", "event_id": "EV_005", "date": "2026-09-21", "status": "invalid"}]
+            with self.assertRaises(ValueError):
+                app.add_profile(bad, history)
+            self.assertEqual(path.read_bytes(), previous)
+            self.assertNotIn("BROKEN", app.dataset.employees)
+            self.assertEqual(app.overview()["employee_count"], len(app.dataset.employees))
+            self.assertEqual(App(DATA, path).overview()["employee_count"], len(app.dataset.employees))
+
+    def test_import_duplicate_record_id_and_completed_repeat(self):
+        base = self.employee(skills={"SK_API_DESIGN": 1})
+        row = {"record_id": "DUP", "employee_id": "JUDGE_1", "event_id": "EV_005", "date": "2026-09-20", "status": "no_show"}
+        with self.assertRaises(ValueError):
+            self.dataset.add_profile(base, [row, row])
+        completed = row | {"status": "completed", "completion_pct": "100"}
+        with self.assertRaises(ValueError):
+            self.dataset.add_profile(base, [completed, completed | {"record_id": "OTHER"}])
+        self.dataset.add_profile(base, [row, row | {"record_id": "SECOND", "date": "2026-09-21"}])
+        self.assertEqual(len(self.dataset.participation("JUDGE_1")["missed"]), 2)
+
+    def test_in_progress_completion_transitions_and_stays_unrecommended(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "changes.json"
+            app = App(DATA, path)
+            employee = self.employee(skills={"SK_SYSTEM_DESIGN": 2, "SK_API_DESIGN": 2})
+            active = {"record_id": "ACTIVE", "employee_id": "JUDGE_1", "event_id": "EV_005", "date": "2026-09-20", "status": "in_progress", "completion_pct": "50"}
+            app.add_profile(employee, [active])
+            self.assertNotIn("EV_005", [x["event_id"] for x in app.dataset.candidates("JUDGE_1")])
+            result = app.complete("JUDGE_1", "EV_005")
+            self.assertEqual(result["record"]["record_id"], "ACTIVE")
+            self.assertEqual(result["record"]["status"], "completed")
+            self.assertEqual(result["trajectory"]["current_skills"]["SK_API_DESIGN"], 3)
+            restored = App(DATA, path)
+            self.assertEqual(len(restored.dataset.participation("JUDGE_1")["completed"]), 1)
+            self.assertEqual(len(restored.dataset.participation("JUDGE_1")["in_progress"]), 0)
+            self.assertNotIn("EV_005", [x["event_id"] for x in restored.dataset.candidates("JUDGE_1")])
+
+    def test_existing_dataset_in_progress_can_complete(self):
+        active = next(row for row in self.dataset.history if row["status"] == "in_progress" and
+                      not any(other["employee_id"] == row["employee_id"] and other["event_id"] == row["event_id"] and
+                              other["status"] == "completed" for other in self.dataset.history))
+        employee_id, event_id = active["employee_id"], active["event_id"]
+        self.assertNotIn(event_id, [item["event_id"] for item in self.dataset.candidates(employee_id)])
+        result = self.dataset.complete(employee_id, event_id)
+        self.assertEqual(result["record"]["record_id"], active["record_id"])
+        self.assertEqual(active["status"], "completed")
+        self.assertNotIn(event_id, [item["event_id"] for item in self.dataset.candidates(employee_id)])
+
+    def test_http_smoke_and_failed_import_hr(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            app = App(DATA, Path(tmp) / "changes.json")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(app))
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            base = f"http://127.0.0.1:{server.server_port}"
+
+            def request(path, body=None):
+                payload = None if body is None else json.dumps(body).encode()
+                with urlopen(Request(base + path, data=payload, headers={"Content-Type": "application/json"}), timeout=5) as response:
+                    return response.status, json.load(response)
+
+            try:
+                employee = self.employee(skills={"SK_SYSTEM_DESIGN": 2, "SK_API_DESIGN": 2})
+                self.assertEqual(request("/api/profiles", {"employee": employee})[0], 201)
+                self.assertEqual(request("/api/employees/JUDGE_1/profile")[0], 200)
+                rec = request("/api/employees/JUDGE_1/recommendations")[1]
+                self.assertEqual(rec["source"], "deterministic")
+                self.assertEqual(request("/api/activity/simulate", {"employee_id": "JUDGE_1", "event_id": "EV_005"})[0], 200)
+                self.assertEqual(request("/api/activity/complete", {"employee_id": "JUDGE_1", "event_id": "EV_005"})[0], 200)
+                bad = self.employee(employee_id="BROKEN")
+                with self.assertRaises(HTTPError) as error:
+                    request("/api/profiles", {"employee": bad, "history": [{"record_id": "BAD", "employee_id": "BROKEN", "event_id": "EV_005", "date": "2026-09-20", "status": "unknown"}]})
+                self.assertEqual(error.exception.code, 400)
+                self.assertEqual(request("/api/hr/overview")[1]["employee_count"], 201)
+            finally:
+                server.shutdown()
+                server.server_close()
 
     def test_completion_gain_cap_and_recommendation_refresh(self):
         self.dataset.add_profile(self.employee(skills={"SK_SYSTEM_DESIGN": 2, "SK_API_DESIGN": 2}))

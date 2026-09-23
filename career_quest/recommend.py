@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import threading
+import time
 from urllib.request import Request, urlopen
 
 from .engine import Dataset
 
 FACTOR_KEYS = {"grade", "requirement", "gap", "critical", "gain", "max_level", "history", "coverage", "eligibility"}
+AI_DEADLINE_SECONDS = 9.0
+_model_slot = threading.BoundedSemaphore(1)
 
 
 def factor_evidence(candidate: dict) -> dict[str, str]:
@@ -82,15 +87,33 @@ def _model_proposals(candidates: list[dict], error: str | None = None) -> list[d
 
 
 def recommendations(dataset: Dataset, employee_id: str, use_ai: bool = True) -> dict:
+    deadline = time.monotonic() + AI_DEADLINE_SECONDS
     candidates = dataset.candidates(employee_id)
     if not candidates:
         return {"source": "deterministic", "recommendations": [], "candidate_count": 0}
-    if use_ai and os.environ.get("OPENAI_API_KEY"):
+    if use_ai and os.environ.get("OPENAI_API_KEY") and time.monotonic() < deadline and _model_slot.acquire(blocking=False):
+        result = queue.Queue(maxsize=1)
+
+        def call_and_verify() -> None:
+            try:
+                proposals = _model_proposals(candidates)
+                verified = verify_proposals(dataset, employee_id, proposals, candidates[:12])
+                result.put_nowait(verified)
+            except Exception:
+                pass
+            finally:
+                _model_slot.release()
+
         try:
-            proposals = _model_proposals(candidates)
-            verified = verify_proposals(dataset, employee_id, proposals, candidates[:12])
-            return {"source": "openai_verified", "recommendations": verified, "candidate_count": len(candidates)}
-        except Exception:
-            pass
+            threading.Thread(target=call_and_verify, daemon=True, name="career-quest-ai").start()
+        except RuntimeError:
+            _model_slot.release()
+        else:
+            try:
+                verified = result.get(timeout=max(0, deadline - time.monotonic()))
+                if time.monotonic() < deadline:
+                    return {"source": "openai_verified", "recommendations": verified, "candidate_count": len(candidates)}
+            except queue.Empty:
+                pass
     proposals = [{"event_id": x["event_id"], "factors": ["grade", "requirement", "gap", "critical" if x["critical_gap_units_closed"] else "coverage", "gain", "history"]} for x in candidates[:3]]
     return {"source": "deterministic", "recommendations": verify_proposals(dataset, employee_id, proposals, candidates), "candidate_count": len(candidates)}
