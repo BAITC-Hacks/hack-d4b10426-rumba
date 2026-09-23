@@ -1,4 +1,4 @@
-> This FAQ documents the intended Career Quest behavior based on the official HackAlem challenge. Implementation status may evolve during the hackathon.
+> This FAQ describes the local Career Quest demo. See [DEMO.md](DEMO.md) for the verified flow and limitations.
 
 # Career Quest FAQ
 
@@ -30,7 +30,7 @@ The recommendation is therefore multi-factor.
 
 ## Where is AI used?
 
-AI is used for multi-factor semantic recommendation, reranking, and explanation.
+Optional AI reranks eligible candidates and selects supported explanation factors. Runtime verification checks the proposal and builds explanations from verified facts. Without AI, or if the call/verification fails, deterministic recommendations remain available. The UI labels the returned source explicitly.
 
 Deterministic logic calculates facts and constraints.
 
@@ -47,11 +47,11 @@ Deterministic logic calculates facts and constraints.
 
 ## Can AI invent activities or skills?
 
-No. Recommendations must reference valid dataset entities. A planned verifier rejects unsupported IDs and facts; this is a design requirement if the verifier is not yet implemented.
+Recommendations must reference valid dataset entities. The implemented runtime verifier rejects unsupported IDs and facts; rejected AI proposals fall back to deterministic recommendations.
 
 ## What happens after an activity is completed?
 
-Skill progress should be updated using the event `gain`/`max_level` rules, and the trajectory and recommendations should be recalculated.
+The server applies the event `gain`/`max_level` rules, saves completion, and recalculates the trajectory and recommendations. The UI displays the confirmed before/after skills, readiness change in percentage points, remaining gaps and next step. This result stays on the current page until the employee changes; a full browser reload clears the result block but retains saved server progress. Simulation previews the server-calculated effect without saving it.
 
 ## What data does the challenge provide?
 
@@ -69,7 +69,7 @@ Files:
 
 ## Does the solution support new employees?
 
-The challenge requires loading additional profiles and history in the provided schema. The solution must not use hardcoded judge-profile logic.
+The web upload and `POST /api/profiles` accept additional profiles and optional history in the provided schema. A successful upload opens the new employee. Recommendations use the same API flow for every employee ID.
 
 ## What does HR see?
 
@@ -81,7 +81,7 @@ There is no public performance leaderboard.
 
 ## How is privacy handled?
 
-Employee engagement and history are not exposed to other employees. Employee and HR roles are separated.
+The included dataset is synthetic. The HR screen shows aggregates, but the local demo has no authentication or employee/HR authorization: anyone with API access can request an employee by ID. Production access controls are required before connecting real personnel data.
 
 ## Why is this not a chatbot?
 

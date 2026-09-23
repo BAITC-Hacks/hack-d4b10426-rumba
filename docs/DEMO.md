@@ -1,78 +1,40 @@
-# Career Quest — Demo Scenario
+# Career Quest · Rumba — demo за 60–90 секунд
 
-## Goal
+## Подготовка
 
-Show how Career Quest helps an employee understand a suitable next career step and why it is recommended.
+Запустите `python -m career_quest.api` и откройте `http://127.0.0.1:8000`.
+UI по умолчанию открывает **E0005**. Числа ниже проверены через настоящий локальный API на исходном dataset со snapshot **2026-10-01**, без сохранённых completion и без OpenAI reranking. В frontend они не зашиты.
 
-## Demo User
+Проверьте текущие значения перед выступлением: `state/changes.json` сохраняет предыдущие завершения и импортированные профили. Уже завершённая активность может исчезнуть из рекомендаций. Используйте отдельный чистый demo instance, если нужен исходный сценарий; не удаляйте чужой state. При других данных или AI-порядке показывайте реальные ответы API.
 
-Use a neutral example with no real personal data:
+## Сценарий — около 80 секунд
 
-- Current role: Backend Engineer
-- Current grade: Middle
-- Target grade: Senior
+| Время | Действие | Что сказать / показать |
+| --- | --- | --- |
+| 0–10 с | Открыть E0005 | **Togzhan Yessenova · Backend Engineer · 27 месяцев · Middle → Senior**. Текущая readiness **68%**. Профиль и траектория загружаются независимо от рекомендаций. |
+| 10–20 с | Показать gaps | **Public Speaking 0/2** — самый низкий текущий навык этого профиля. **System Design 2/4** отмечен как критический для следующего грейда. Низкий уровень сам по себе не определяет первый шаг. |
+| 20–30 с | Первая карточка | **ACTIVITY: System Design Fundamentals**, **TARGET GRADE: Senior**. В проверенном запуске источник — **Deterministic recommendation**. |
+| 30–45 с | WHY THIS ACTIVITY | Пять отдельных факторов: связь с грейдом, конкретный gap, ожидаемый эффект, история, покрытие требований. System Design **2 → 3**, requirement **4**, `max_level` **3**; улучшается **1** требование и закрывается **1** уровень критического пробела. Похожие активности: **2 завершено, 2 пропущено, 0 отклонено**. Это история данной рекомендации, а не Public Speaking. |
+| 45–55 с | «Посмотреть эффект» | Явная **Simulation**: readiness **68% → 70%**, System Design **2 → 3**, API Design **3 → 3**. Номинальный gain не выдаётся за реальный рост выше cap. Требований закрыто **5/16 → 5/16**; критических пробелов **2 → 2**, System Design gap уменьшается с **2** до **1**. Раскройте «Пробелы до → после». Просмотр не меняет навыки или историю. |
+| 55–65 с | «Завершить активность» | Кнопка блокируется до ответа. Успех отображается только после подтверждения API. |
+| 65–75 с | «Результат активности» | Устойчивый блок показывает activity, навыки до/после, **68% → 70%, +2 п.п.**, оставшиеся gaps и следующий шаг **Architecture Review Circle**. Карта теперь показывает реальные **70%**, история обновлена. Блок остаётся при повторном открытии того же ID и переходе в HR; смена сотрудника очищает его. |
+| 75–85 с | «HR обзор» | Агрегаты сотрудников, грейдов, частых gaps, завершений/участий и числа сотрудников без следующего шага. Публичного leaderboard нет. |
 
-## Demo Flow
+Главная мысль: система рекомендует критический System Design, хотя самый низкий текущий навык — Public Speaking. Объяснение опирается на поля API; UI не пересчитывает ранжирование, readiness или правила развития навыков.
 
-### Step 1 — Employee Profile
+## Дополнительные работающие сценарии
 
-Show the employee's current role and grade, skills, activity history, and requirements for the next grade.
+- Введите произвольный ID из dataset через «Открыть» или Enter. Старые recommendations, simulation и результат другого сотрудника очищаются; поздние ответы не меняют новый экран.
+- «Добавить judge profile»: JSON `{"employee": {...}, "history": [...]}` по [API](API.md). После успешного импорта новый ID открывается автоматически. Проверен реальный импорт профиля и состояние без подходящих рекомендаций.
+- Медленные рекомендации имеют собственный loading; ошибка — собственное сообщение и кнопку «Повторить». Профиль остаётся доступным.
+- `source=openai_verified` отображается как **AI recommendation verified by runtime**. `source=deterministic` — **Deterministic recommendation**. Live-вызов OpenAI не входил в этот demo-прогон.
 
-### Step 2 — Skill Gaps
+## Проверка и границы demo
 
-Compare current skills with next-grade requirements. Do not automatically recommend the employee's lowest skill; consider which gaps matter for the target grade.
+Проверены в Chromium с отдельным временным API state: E0005 end-to-end, задержка recommendations на 3 секунды, ошибка/retry, быстрый A → B при поздних ответах profile/trajectory/recommendations, поздние simulation/completion, double click, произвольный E0017, импорт, отсутствие рекомендаций, HR и мобильная ширина 375 px. Искусственные задержки и ошибки вводились только браузерной проверкой. Отдельного frontend test runner в репозитории нет; inline JavaScript проверяется `node --check` после извлечения script, также выполняется `git diff --check`.
 
-### Step 3 — Recommendation
-
-Offer 1–3 activities, considering current grade, next-grade requirements, skill gaps, participation history, and each activity's effect.
-
-### Step 4 — Explanation
-
-Explain why an activity was selected. For example, a demo explanation might show:
-
-- System Design: current 2
-- Senior requirement: 4
-- Activity gain: +1
-- This activity reduces a critical next-grade gap.
-- Participation history was considered.
-
-These values are illustrative demo examples, not claims about the dataset.
-
-### Step 5 — What-If
-
-Show the expected effect before completion:
-
-**BEFORE** → current skill state → current grade readiness
-
-**AFTER** → projected skill state → updated grade readiness
-
-### Step 6 — Complete Activity
-
-On completion, apply the dataset's `gain` and `max_level` rules, update employee state, recalculate the trajectory, and refresh recommendations.
-
-### Step 7 — HR View
-
-Show an aggregated overview of common skill gaps, activity participation, and employees without a useful next step. Do not use a public employee leaderboard.
-
-## Why AI Is Needed
-
-AI supports multi-factor recommendations and explanations. Deterministic runtime logic handles skill gaps, grade requirements, activity effects, `gain`/`max_level` rules, and validation.
-
-**Model proposes, runtime verifies.**
-
-## Judge Trap
-
-**A recommendation must not be based on the lowest skill alone.** An employee may have the lowest Public Speaking score while System Design is more critical for the next grade; participation history may also show repeated skips of similar Public Speaking activities. Consider these factors together.
-
-## Demo Success Criteria
-
-The demo should show:
-
-1. Employee profile
-2. Career trajectory
-3. 1–3 recommendations
-4. Multi-factor explanation
-5. Progress change after completion
-6. HR overview
-
-This document describes the intended demo flow based on the official HackAlem Career Quest challenge. It does not claim that every listed capability is already implemented.
+- ≤2 секунды — целевой отклик, не гарантия любой сети: profile/trajectory всё ещё зависят от скорости API. Медленный AI больше не входит в их ожидание.
+- Блок результата хранится в текущей странице до смены сотрудника. Полная перезагрузка страницы очищает блок; сохранённое сервером развитие остаётся.
+- Переключение сотрудника скрывает старый результат, но не отменяет уже отправленный completion. При сетевой ошибке UI не показывает успех и предлагает обновить профиль перед повтором, поскольку сервер мог сохранить действие.
+- Для навыков, чьё имя отсутствует в доступных API-ответах, UI показывает настоящий `skill_id`.
+- Readiness — показатель выполнения skill requirements, а не решение о повышении. Employee/HR — экраны demo, без production-аутентификации или разграничения доступа.
