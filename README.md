@@ -1,80 +1,115 @@
 # Career Quest
 
-Career Quest is Rumba's HackAlem AI concept for Halyk Bank.
+**Rumba · HackAlem AI · Halyk Bank challenge**
 
 ## Executive Summary
 
-- **Problem:** Employees see HR events in isolation and cannot tell how learning, assessments, rotations, and other activities affect career growth.
-- **Solution:** A career profile connects grade requirements, skill gaps, participation history, and relevant activities into a clear next step.
-- **Target User:** Primarily employees with 1–5 years of tenure; HR is the secondary user.
-- **Why AI:** A multi-factor decision layer can rank suitable activities and explain their relevance in context.
-- **Expected Value:** More actionable development plans for employees and better visibility into career support for HR.
+Career Quest is a working career development tool built on the supplied synthetic challenge dataset. It connects an employee's grade requirements, assessed skills, activity history and eligible events. The result is 1–3 actionable recommendations with a projected effect. Employees can preview an event and complete it; the application then updates skills, gaps, readiness and the next recommendation. HR sees aggregate gaps and participation.
 
 ## Problem
 
-Scattered HR events make it difficult for employees to see which activities matter for their next grade or how completed activities change their progress.
+An employee can see activities but cannot easily tell which one helps reach the next grade. A low skill is not necessarily a critical promotion gap. Previous missed or declined activities also matter when choosing a practical next step.
 
-## Users
+## Target Users
 
-- **Employee:** Reviews their current grade, skills, career trajectory, gaps, and recommended actions.
-- **HR:** Reviews employee development and activity participation through a separate role-based view.
+- **Employees:** view their own trajectory and plan a next activity.
+- **HR:** see aggregate development gaps and activity uptake.
+
+The included profiles are synthetic. This local demo does not implement production authentication.
 
 ## Core Workflow
 
-Employee profile → current grade and skills → next-grade requirements → skill gaps → participation history → 1–3 recommended activities → explanation using at least three factors → activity completion → updated skills and progress → new recommendation.
+`Profile → next-grade requirements → effective skills → gaps → eligible candidates → verified recommendation → what-if → completion → recalculation`
 
-## Recommendation Logic
-
-Recommendations should consider **current grade**, **next-grade requirements**, **skill gaps**, **participation history**, and **event effects**. The deterministic runtime is intended to calculate factual gaps and activity effects, including `gain` and `max_level`, while AI proposes or reranks activities. A deterministic verifier then checks that each proposal is eligible and consistent with those facts. Explanations should cite at least three relevant factors.
+The web app starts with `E0001` as a demo profile. Enter any other dataset employee ID, or upload a JSON object containing a new `employee` and optional `history` rows in the supplied schema.
 
 ## Why This Is Not a Chatbot Wrapper
 
-The intended flow is:
+The domain engine calculates every skill level, gap, grade requirement, event effect and readiness value in deterministic Python code. The model can only rerank a bounded set of prefiltered candidates and choose structured evidence factors. Runtime verification checks its proposals, and the explanation is assembled from checked facts. The product still works without an API key.
 
-`Profile + History + Requirements → Deterministic Feature Engine → AI Recommendation → Verification → Career Progress Update`
+## Multi-Factor Recommendation
 
-**Model proposes, runtime verifies.** AI is a multi-factor decision layer; the runtime owns calculations and validation.
+Candidates must match role and grade, meet prerequisites, have an available session (or be self paced), and produce a useful next-grade skill gain after `max_level`. Mandatory, completed (except recurring `EV_036`), in-progress and ineffective events are excluded. Ranking considers critical and ordinary gap closure, number of requirements helped, gain, effort, and similar completed, missed or declined activities. It never selects an event solely because the employee's lowest skill is low.
+
+## Explainability
+
+Each recommendation carries `effects`, `requirements_helped`, `critical_gap_units_closed`, `gap_units_closed`, `history`, projected readiness, factor keys and a fact-based explanation. Similar history is shown as counts. The model does not get names, free-text employee biography or raw activity records: only structured candidate evidence.
 
 ## Architecture
 
-The proposed architecture has a web frontend, employee and HR views, a deterministic career/skill engine, an AI recommendation layer, and a deterministic verifier. Progress is recalculated after an activity is completed. These are design targets, not claims of completed functionality.
+Modular monolith, Python standard library server and a responsive vanilla HTML/CSS/JS client:
+
+| Module | Responsibility |
+| --- | --- |
+| `career_quest/engine.py` | Load dataset, replay post-review completions, calculate trajectory, candidates, simulation and completion |
+| `career_quest/recommend.py` | Multi-factor ranking, optional bounded OpenAI reranking, strict proposal verification and fallback |
+| `career_quest/api.py` | JSON endpoints, aggregate HR view, atomic persistence of local changes |
+| `web/index.html` | Employee and HR views, what-if modal, completion and profile upload |
+
+API contracts are in [docs/API.md](docs/API.md). Dataset details are in [docs/DATASET.md](docs/DATASET.md).
+
+## Model Proposes, Runtime Verifies
+
+When `OPENAI_API_KEY` is set, the API sends up to 12 compact candidate feature objects to `gpt-4.1-mini` by default (`OPENAI_MODEL` can override). It requests strict JSON containing 1–3 event IDs and factor keys, with an 8-second network timeout. The verifier rejects unknown, duplicate, ineligible or ineffective events; unsupported skills, requirements, gain or `max_level`; and fewer than three distinct evidence factors. Explanations are built from verified fields. If the model call or verification fails, a deterministic top-three fallback responds. Live model latency and behavior require an API key and were not exercised in the local test run.
+
+## What-If Simulation
+
+The what-if endpoint applies the selected event to a copy of effective skills and returns before/after readiness, gaps and skill levels. It does not append history or mutate the employee. The UI presents the comparison before offering completion.
+
+## HR View
+
+The HR endpoint and screen show common next-grade skill gaps, grade counts, average assessed skill levels, activity participation/completion counts, and the count of employees without a candidate recommendation. There is no public employee leaderboard.
 
 ## Data
 
-The challenge dataset is described as `employees.json` (200 employees), `events.json` (40 events), `skills.json` (60 skills), and `activity_history.csv` (24 months of activity history). This describes the challenge inputs; it does not imply that every dataset file is already committed here.
+The real starter kit is committed in `data/`: `employees.json` (200 profiles), `events.json` (40 events), `skills.json` (60 skills and 8 roles × 4 grades), `activity_history.csv` (2,743 rows), and the original English, Russian and Kazakh READMEs. The snapshot date is 2026-10-01; the starter kit says to treat it as today. Employee skill assessments are dated; completed events after `last_review_date` are replayed to calculate current skill levels. Apple metadata files were not used.
 
-## HackAlem Must-Have Requirements
+## Challenge Requirements Mapping
 
-- Employee profile and career trajectory
-- 1–3 AI recommendations
-- Recommendation explanation using multiple factors
-- Progress update after activity completion
-- HR view
-- Support for uploading an additional profile
+| Challenge requirement | Implementation | Evidence |
+| --- | --- | --- |
+| Employee profile and trajectory | Effective skills, next grade, requirements, critical gaps and readiness | `engine.py`; `GET /api/employees/{id}/trajectory` |
+| 1–3 multi-factor AI recommendations | Prefiltered candidate features, optional OpenAI reranking, deterministic fallback | `recommend.py`; `GET /api/employees/{id}/recommendations` |
+| Explain at least three factors | Verifier requires three distinct supported factor keys | `verify_proposals`; tests |
+| Completion updates progress | Apply `gain` bounded by `max_level`; append history; recalculate | `POST /api/activity/complete`; browser flow |
+| What-if | Clone skills and return before/after without mutation | `POST /api/activity/simulate`; test |
+| HR view | Aggregate gaps, grades and participation, no leaderboard | `GET /api/hr/overview`; HR screen |
+| Additional judge profile/history | Upload through API or web input without ID-specific logic | `POST /api/profiles`; test |
 
-## Evaluation Strategy
+## Performance
 
-A key judge trap is recommending an activity solely because it improves the employee's lowest skill. Evaluation should test whether recommendations also reflect **next-grade criticality** and **participation history**, and whether verified event effects produce a credible progress update and subsequent recommendation.
+Dataset-derived catalogs and indexes load once at startup; candidate filtering runs before the model call. On the local test environment, a direct HR overview calculation took about **0.03 s** for 200 employees and a deterministic recommendation for `E0001` took under **0.01 s**. These are local measurements, not a hosted UI guarantee. The OpenAI request has an 8-second timeout and falls back locally to stay within the challenge's 10-second recommendation target when the provider is slow or unavailable.
 
-## Privacy and Roles
+## Tests
 
-Employee and HR access should be separated. Individual employee development data should not be exposed through a public employee leaderboard.
+Run `python -m unittest discover -s tests -v`. Nine tests cover: critical next-grade skills versus low unrelated skills; three similar misses and explanation; ineffective `max_level`; unrelated skill ranking; arbitrary uploaded profiles/history; hallucinated event IDs; completion gain and cap; what-if immutability; and persistence across restart. Browser and HTTP smoke checks were also run locally.
 
-## Planned Technical Direction
+## Privacy
 
-- Modular monolith
-- Deterministic career/skill engine
-- Fast OpenAI model for semantic recommendation or reranking
-- Structured outputs
-- Deterministic verifier
-- Web frontend
+Challenge people are synthetic. The HR endpoint returns aggregates and no leaderboard. The local server is a demo and has no login or role authorization; protect employee and HR endpoints with organization identity and access control before connecting real personnel data. Local mutations live in ignored `state/changes.json`.
 
-The specific model and libraries have not been selected here.
+## Run Locally
 
-## Running Locally
+Requires Python 3.10+; no pip dependencies.
 
-Run instructions will be updated as implementation lands.
+```powershell
+python -m career_quest.api
+```
 
-## Team
+Open <http://127.0.0.1:8000>. Optionally set `OPENAI_API_KEY` and `OPENAI_MODEL` before launch to enable AI reranking. Without a key, deterministic recommendations work end to end. `PORT` and `HOST` can override the default `127.0.0.1:8000` bind address.
 
-Rumba — 2 participants.
+## Demo
+
+1. Open employee `E0001`: view Junior → Middle requirements and the critical API Design gap.
+2. Open **What if?** on **System Design Fundamentals**: readiness is projected from 54.5% to 60.6% on the untouched starter state.
+3. Complete it: the API writes history, updates two skills, removes that completed event from candidates and recalculates the next step.
+4. Open **HR обзор** to see aggregate gaps and completion counts.
+5. Upload a new JSON profile/history to exercise judge input without changing source code.
+
+## Limitations
+
+- No production authentication, employee-level authorization or hosted deployment is included.
+- The next-grade trajectory follows the employee's current role; cross-role `career_goal` planning is not yet calculated.
+- Readiness is a transparent skill-requirement percentage, not an HR promotion decision.
+- The starter snapshot fixes event availability at 2026-10-01; the demo does not update calendars in real time.
+- OpenAI reranking is optional and has a deterministic fallback. Live provider behavior needs an API key to verify.

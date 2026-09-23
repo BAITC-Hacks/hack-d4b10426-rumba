@@ -88,7 +88,7 @@ def recommendations(dataset: Dataset, employee_id: str, use_ai: bool = True) -> 
     if use_ai and os.environ.get("OPENAI_API_KEY"):
         try:
             proposals = _model_proposals(candidates)
-            verified = verify_proposals(dataset, employee_id, proposals, candidates)
+            verified = verify_proposals(dataset, employee_id, proposals, candidates[:12])
             return {"source": "openai_verified", "recommendations": verified, "candidate_count": len(candidates)}
         except Exception:
             pass

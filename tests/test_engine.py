@@ -55,10 +55,15 @@ class CareerQuestTests(unittest.TestCase):
     def test_unrelated_skill_does_not_rank_first(self):
         skills = dict(self.dataset.profiles[("Backend Engineer", "Middle")]["required_skills"])
         skills["SK_API_DESIGN"] = 2
-        skills["SK_PUBLIC_SPEAKING"] = 0
+        skills["SK_PROSPECTING"] = 0
         self.dataset.add_profile(self.employee(skills=skills))
+        unrelated = deepcopy(self.dataset.events["EV_005"])
+        unrelated["event_id"] = "JUDGE_UNRELATED"
+        unrelated["develops_skills"] = [{"skill_id": "SK_PROSPECTING", "gain": 5, "max_level": 5}]
+        self.dataset.events["JUDGE_UNRELATED"] = unrelated
         picks = self.dataset.candidates("JUDGE_1")
         self.assertTrue(picks)
+        self.assertNotIn("JUDGE_UNRELATED", [x["event_id"] for x in picks])
         self.assertGreater(picks[0]["gap_units_closed"], 0)
 
     def test_new_profile_and_history_without_hardcoding(self):
