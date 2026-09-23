@@ -21,11 +21,11 @@ The included profiles are synthetic. This local demo does not implement producti
 
 `Profile → next-grade requirements → effective skills → gaps → eligible candidates → verified recommendation → what-if → completion → recalculation`
 
-The web app starts with `E0001` as a demo profile. Enter any other dataset employee ID, or upload a JSON object containing a new `employee` and optional `history` rows in the supplied schema.
+The web app opens `E0005` as its default demo profile. Enter any other dataset employee ID, or upload a JSON object containing a new `employee` and optional `history` rows in the supplied schema.
 
 ## Why This Is Not a Chatbot Wrapper
 
-The domain engine calculates every skill level, gap, grade requirement, event effect and readiness value in deterministic Python code. The model can only rerank a bounded set of prefiltered candidates and choose structured evidence factors. Runtime verification checks its proposals, and the explanation is assembled from checked facts. The product still works without an API key.
+The domain engine calculates every skill level, gap, grade requirement, event effect and readiness value in deterministic Python code. The model can rerank a bounded set of prefiltered recommendation candidates or propose workflow event IDs and evidence factors. Verifiers check those proposals against domain facts, and recommendation explanations are assembled from checked evidence. The product still works without an API key.
 
 ## Multi-Factor Recommendation
 
@@ -48,15 +48,17 @@ Modular monolith, Python standard library server and a responsive vanilla HTML/C
 | `career_quest/workflow_runtime.py` | Canonical execution state, observations, factual trace, revalidation and replan |
 | `web/index.html` | Employee and HR views, what-if modal, completion and profile upload |
 
-## Career Execution Plan
+## Career Workflow Execution Runtime
 
-The employee screen can create a persisted next-grade workflow of up to three activities. The model may propose only event IDs and evidence factor keys; the compiler independently verifies eligibility, requirements, dataset gains and caps, critical-first priority and marginal value on each projected state. Without a key, or if the proposal fails or times out, the deterministic planner uses the same compiler. Activities are followed by `CHECK` and `REASSESS`; later steps remain tentative. Confirming the current activity commits it through the domain engine, reads fresh skills, appends an observation and revalidates the tail. Completing another eligible activity through the existing endpoint also triggers observation and replan. The trace and completed prefix remain intact. Readiness is a forecast until observed after completion; achieving all requirements marks `DONE` without changing grade. API details are in [docs/API.md](docs/API.md).
+The employee screen can create a persisted next-grade workflow of up to three activities: `Goal → compiled verified workflow → user-confirmed action → observation → check → replan → DONE`. A proposal contains only event IDs and evidence factor keys; the compiler independently verifies eligibility, requirements, dataset gains and caps, critical-first priority and marginal value on each projected state. The deterministic planner uses the same compiler when no key is configured or an AI proposal fails or times out. Activities are followed by `CHECK` and `REASSESS`; later steps remain tentative. Confirming the current activity commits it through the domain engine, reads fresh skills, appends an observation and revalidates the tail. Completing another eligible activity through the existing endpoint also triggers observation and replan. The trace and completed prefix remain intact. Readiness is a forecast until observed after completion; achieving all requirements marks `DONE` without changing grade. Workflows, observations and trace are restored after server restart. API details are in [docs/API.md](docs/API.md).
+
+In the verified workflow demo, initial readiness is **94%** and the compiled forecast is **94 → 96 → 98 → 100%**, starting with planned activity `EV_007`. Completing alternative activity `EV_006` produces **96% actual readiness**, marks the old tail `DIRTY`, and replans the remaining activities as `EV_036 → EV_036`. The workflow reaches `DONE` at **100%**. These values describe the reproducible demo state, not rules hardcoded into the planner.
 
 API contracts are in [docs/API.md](docs/API.md). Dataset details are in [docs/DATASET.md](docs/DATASET.md).
 
 ## Model Proposes, Runtime Verifies
 
-When `OPENAI_API_KEY` is set, the API sends up to 12 compact candidate feature objects to [`gpt-4.1-mini`](https://developers.openai.com/api/docs/models/gpt-4.1-mini) by default (`OPENAI_MODEL` can override). It requests [strict JSON](https://developers.openai.com/api/docs/guides/structured-outputs) containing 1–3 event IDs and factor keys, with an 8-second network timeout. The verifier rejects unknown, duplicate, ineligible or ineffective events; unsupported skills, requirements, gain or `max_level`; and fewer than three distinct evidence factors. Explanations are built from verified fields. If the model call or verification fails, a deterministic top-three fallback responds. Live model latency and behavior require an API key and were not exercised in the local test run.
+When `OPENAI_API_KEY` is set, the recommendation API sends up to 12 compact candidate feature objects to [`gpt-4.1-mini`](https://developers.openai.com/api/docs/models/gpt-4.1-mini) by default (`OPENAI_MODEL` can override). It requests [strict JSON](https://developers.openai.com/api/docs/guides/structured-outputs) containing 1–3 event IDs and factor keys, with an 8-second network timeout. The recommendation verifier rejects unknown, duplicate, ineligible or ineffective events; unsupported skills, requirements, gain or `max_level`; and fewer than three distinct evidence factors. Explanations are built from verified fields. If the model call or verification fails, a deterministic top-three fallback responds. The OpenAI workflow proposal path is also supported when `OPENAI_API_KEY` is configured; the same workflow compiler and verifier validate AI proposals. Deterministic workflow fallback is fully operational and was used in the verified release gate. Live OpenAI workflow planning was not part of the final release-gate run.
 
 ## What-If Simulation
 
@@ -88,7 +90,7 @@ Dataset-derived catalogs and indexes load once at startup; candidate filtering r
 
 ## Tests
 
-Run `python -m unittest discover -s tests -v`. Ten tests cover: critical next-grade skills versus low unrelated skills; three similar misses and explanation; ineffective `max_level`; unrelated skill ranking; arbitrary uploaded profiles/history; hallucinated event IDs and fallback; completion gain and cap; what-if immutability; and persistence across restart. Browser and HTTP smoke checks were also run locally.
+Run `python -m unittest discover -s tests -v`. The current verified result is **26/26 tests passing**. The suite covers recommendation ranking and verification, fallback, uploaded profiles, completion, what-if immutability, workflow compilation and execution, alternative activity replan, `DONE`, and persistence across restart. Browser and HTTP smoke checks were also run locally.
 
 ## Privacy
 
@@ -102,9 +104,11 @@ Requires Python 3.10+; no pip dependencies.
 python -m career_quest.api
 ```
 
-Open <http://127.0.0.1:8000>. Optionally set `OPENAI_API_KEY` and `OPENAI_MODEL` before launch to enable AI reranking. Without a key, deterministic recommendations work end to end. `PORT` and `HOST` can override the default `127.0.0.1:8000` bind address.
+Open <http://127.0.0.1:8000>. Optionally set `OPENAI_API_KEY` and `OPENAI_MODEL` before launch to enable AI recommendation reranking and workflow proposals. Without a key, deterministic recommendations and workflows work end to end. `PORT` and `HOST` can override the default `127.0.0.1:8000` bind address.
 
 ## Demo
+
+The default UI profile is `E0005`. For a separate reproducible core-flow example:
 
 1. Open employee `E0001`: view Junior → Middle requirements and the critical API Design gap.
 2. Open **What if?** on **System Design Fundamentals**: readiness is projected from 54.5% to 60.6% on the untouched starter state.
@@ -118,4 +122,4 @@ Open <http://127.0.0.1:8000>. Optionally set `OPENAI_API_KEY` and `OPENAI_MODEL`
 - The next-grade trajectory follows the employee's current role; cross-role `career_goal` planning is not yet calculated.
 - Readiness is a transparent skill-requirement percentage, not an HR promotion decision.
 - The starter snapshot fixes event availability at 2026-10-01; the demo does not update calendars in real time.
-- OpenAI reranking is optional and has a deterministic fallback. Live provider behavior needs an API key to verify.
+- OpenAI recommendation reranking and workflow proposals are optional and have deterministic fallbacks. Live provider behavior needs an API key to verify.
