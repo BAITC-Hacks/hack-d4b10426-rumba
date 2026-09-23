@@ -44,7 +44,13 @@ Modular monolith, Python standard library server and a responsive vanilla HTML/C
 | `career_quest/engine.py` | Load dataset, replay post-review completions, calculate trajectory, candidates, simulation and completion |
 | `career_quest/recommend.py` | Multi-factor ranking, optional bounded OpenAI reranking, strict proposal verification and fallback |
 | `career_quest/api.py` | JSON endpoints, aggregate HR view, atomic persistence of local changes |
+| `career_quest/workflow.py` | Bounded AI/deterministic proposals, projected-state compiler and simulator-backed expected effects |
+| `career_quest/workflow_runtime.py` | Canonical execution state, observations, factual trace, revalidation and replan |
 | `web/index.html` | Employee and HR views, what-if modal, completion and profile upload |
+
+## Career Execution Plan
+
+The employee screen can create a persisted next-grade workflow of up to three activities. The model may propose only event IDs and evidence factor keys; the compiler independently verifies eligibility, requirements, dataset gains and caps, critical-first priority and marginal value on each projected state. Without a key, or if the proposal fails or times out, the deterministic planner uses the same compiler. Activities are followed by `CHECK` and `REASSESS`; later steps remain tentative. Confirming the current activity commits it through the domain engine, reads fresh skills, appends an observation and revalidates the tail. Completing another eligible activity through the existing endpoint also triggers observation and replan. The trace and completed prefix remain intact. Readiness is a forecast until observed after completion; achieving all requirements marks `DONE` without changing grade. API details are in [docs/API.md](docs/API.md).
 
 API contracts are in [docs/API.md](docs/API.md). Dataset details are in [docs/DATASET.md](docs/DATASET.md).
 

@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlparse
 
 from .engine import Dataset
 from .recommend import recommendations
+from . import workflow_runtime
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -21,9 +22,10 @@ class App:
         self.dataset = Dataset(data_dir)
         self.state_file = Path(state_file)
         self.lock = threading.RLock()
-        self.state = {"profiles": [], "completions": []}
+        self.state = {"profiles": [], "completions": [], "workflows": []}
         if self.state_file.exists():
             self.state = json.loads(self.state_file.read_text(encoding="utf-8"))
+            self.state.setdefault("workflows", [])
             for item in self.state["profiles"]:
                 self.dataset.add_profile(item["employee"], item.get("history", []))
             for item in self.state["completions"]:
@@ -76,14 +78,68 @@ class App:
 
     def complete(self, employee_id: str, event_id: str) -> dict:
         with self.lock:
-            result = self.dataset.complete(employee_id, event_id)
+            staged_dataset = deepcopy(self.dataset)
+            staged_state = deepcopy(self.state)
+            result = staged_dataset.complete(employee_id, event_id)
             stored = dict(result["record"])
             if "replaces_record_id" in result:
                 stored["replaces_record_id"] = result["replaces_record_id"]
-            self.state["completions"].append(stored)
-            self.save()
-            result["recommendations"] = recommendations(self.dataset, employee_id, use_ai=False)
+            staged_state["completions"].append(stored)
+            for workflow in staged_state["workflows"]:
+                if workflow["employee_id"] == employee_id and workflow["state"] not in {"DONE", "BLOCKED"}:
+                    workflow_runtime.observe_completion(staged_dataset, workflow, result)
+            self.save(staged_state)
+            self.dataset, self.state = staged_dataset, staged_state
+            result["recommendations"] = recommendations(staged_dataset, employee_id, use_ai=False)
             return result
+
+    def create_workflow(self, employee_id: str, goal: dict, horizon: int) -> dict:
+        with self.lock:
+            if any(w["employee_id"] == employee_id and w["state"] not in {"DONE", "BLOCKED"} for w in self.state["workflows"]):
+                raise ValueError("employee already has an active workflow")
+            workflow = workflow_runtime.create(self.dataset, employee_id, goal, horizon)
+            staged = deepcopy(self.state)
+            staged["workflows"].append(workflow)
+            self.save(staged)
+            self.state = staged
+            return workflow_runtime.view(self.dataset, workflow)
+
+    def workflow(self, workflow_id: str) -> dict:
+        with self.lock:
+            workflow = next(w for w in self.state["workflows"] if w["id"] == workflow_id)
+            return workflow_runtime.view(self.dataset, workflow)
+
+    def workflow_command(self, workflow_id: str, body: dict) -> dict:
+        with self.lock:
+            staged = deepcopy(self.state)
+            workflow = next(w for w in staged["workflows"] if w["id"] == workflow_id)
+            action = body.get("action")
+            if action == "replan":
+                workflow_runtime.replan(self.dataset, workflow)
+                self.save(staged)
+                self.state = staged
+                return workflow_runtime.view(self.dataset, workflow)
+            if action != "confirm_completion" or body.get("confirmed") is not True:
+                raise ValueError("explicit confirmation required")
+            if workflow["state"] != "WAITING_USER":
+                raise ValueError("workflow is not waiting for confirmation")
+            current = workflow_runtime.current_activity(workflow)
+            if current is None or body.get("event_id") != current["event_id"]:
+                raise ValueError("only current activity can be confirmed")
+            # Complete through the existing domain path, then persist state and workflow together.
+            staged_dataset = deepcopy(self.dataset)
+            workflow["state"] = "EXECUTING"
+            workflow_runtime.trace(workflow, "EXECUTE", current["event_id"], "USER_CONFIRMED", {"event_id": current["event_id"]})
+            result = staged_dataset.complete(workflow["employee_id"], current["event_id"])
+            stored = dict(result["record"])
+            if "replaces_record_id" in result:
+                stored["replaces_record_id"] = result["replaces_record_id"]
+            staged["completions"].append(stored)
+            workflow["state"] = "CHECKING"
+            workflow_runtime.observe_completion(staged_dataset, workflow, result)
+            self.save(staged)
+            self.dataset, self.state = staged_dataset, staged
+            return workflow_runtime.view(staged_dataset, workflow)
 
     def add_profile(self, employee: dict, history: list[dict]) -> dict:
         with self.lock:
@@ -133,6 +189,8 @@ def handler_for(app: App):
                 if path == "/api/hr/overview":
                     return self.reply(200, app.overview())
                 parts = path.strip("/").split("/")
+                if len(parts) == 3 and parts[:2] == ["api", "workflows"]:
+                    return self.reply(200, app.workflow(parts[2]))
                 if len(parts) == 4 and parts[:2] == ["api", "employees"]:
                     employee_id, view = parts[2:]
                     if view == "profile":
@@ -142,7 +200,7 @@ def handler_for(app: App):
                     if view == "recommendations":
                         return self.reply(200, recommendations(app.dataset, employee_id))
                 self.reply(404, {"error": "not found"})
-            except KeyError:
+            except (KeyError, StopIteration):
                 self.reply(404, {"error": "unknown employee or event"})
             except Exception as exc:
                 self.reply(400, {"error": str(exc)})
@@ -156,12 +214,17 @@ def handler_for(app: App):
                 path = urlparse(self.path).path
                 if path == "/api/profiles":
                     return self.reply(201, app.add_profile(body["employee"], body.get("history", [])))
+                if path == "/api/workflows":
+                    return self.reply(201, app.create_workflow(body["employee_id"], body["goal"], body["horizon"]))
+                parts = path.strip("/").split("/")
+                if len(parts) == 4 and parts[:2] == ["api", "workflows"] and parts[3] == "commands":
+                    return self.reply(200, app.workflow_command(parts[2], body))
                 if path == "/api/activity/simulate":
                     return self.reply(200, app.dataset.simulate(body["employee_id"], body["event_id"]))
                 if path == "/api/activity/complete":
                     return self.reply(200, app.complete(body["employee_id"], body["event_id"]))
                 self.reply(404, {"error": "not found"})
-            except KeyError:
+            except (KeyError, StopIteration):
                 self.reply(404, {"error": "unknown employee or event"})
             except (ValueError, TypeError) as exc:
                 self.reply(400, {"error": str(exc)})
